@@ -1,1 +1,2 @@
-# Opero
+# Opero Smart Contracts and Platform
+
