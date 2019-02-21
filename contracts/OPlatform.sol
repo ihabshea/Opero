@@ -551,15 +551,7 @@ contract OPlatform{
         currentProject.pstatus = projectStatus.FINISHED;
         //Logic: pay freelancer and return collateral
     }
-    // function decideReport(uint256 _reportNumber){
-    //   //require(witnessRanks[msg.sender] > 0 && witnessRanks[msg.sender] < 22);
-    //   require((block.number > casePeriod) && (block.number < casePeriod + challengingPeriod));
-    //   witnessVote[witnessRanks[msg.sender]][_caseID] = true;
-    //   reportVotes[_caseID] = reportVotes[_caseID].add(1);
-    //   if(reportVotes[_caseID] > (witnessCount/2)){
-    //     cases[_caseID].spam = true;
-    //   }
-    // }
+
 
     event Reported(uint256 _caseID, address reporter);
     function reportCase(uint256 _caseID) public returns(bool reported){
