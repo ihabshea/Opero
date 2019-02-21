@@ -7,6 +7,7 @@ contract OPTInterface {
     function freeze(address _account, bool _value) public  returns (uint256);
     function burn(address _account, uint256 _amount) public returns (uint256);
     function burnAll(address _account) public returns(bool);
+    function getTotalSupply() public view returns(uint256);
     function freezeAmount(address __account, uint256 _amount) public returns(uint256);
 }
 import "./SafeMath.sol";
@@ -23,6 +24,8 @@ contract OPlatform{
     uint256 offerCounter;
     uint256 taskCounter;
     uint256 tagCounter;
+    uint256 reportCounter;
+    uint256 fileCounter;
     uint256 TOACounter;
     uint256 PrizePool;
     uint256 roundsPerHalving;
@@ -44,6 +47,7 @@ contract OPlatform{
         string medium;
         string linkedin;
         uint256 client;
+        string bio;
         string github;
     }
     struct freelancer{
@@ -52,6 +56,7 @@ contract OPlatform{
         string email;
         string website;
         string github;
+        string bio;
         string linkedin;
         string medium;
     }
@@ -64,6 +69,8 @@ contract OPlatform{
         string title;
         uint256 time;
         uint256 downPayment;
+        bool freelancerPenalty;
+        bool clientPenalty;
         projectStatus pstatus;
     }
     struct offer{
@@ -73,13 +80,6 @@ contract OPlatform{
         uint256 budget;
         uint256 time;
         bool approved;
-    }
-    struct counterOffer{
-        uint256 projectNum;
-        client pclient;
-        freelancer pfreelancer;
-        uint256 newBudget;
-        bool  approved;
     }
     struct PTOA{
         uint256 projectNum;
@@ -104,12 +104,38 @@ contract OPlatform{
         freelancer afreelancer;
         string attachmentLink;
     }
-
-    struct report{
+    struct attachedtoProject{
         uint256 projectNum;
-        uint256 taskNum;
+        client aclient;
+        string attachmentLink;
+    }
+    struct Witness {
+       address addr;
+       string name;
+    }
+    struct Judge{
+        address addr;
+        string name;
+        bool approved;
+    }
+    struct basicReport{
+      uint256 reportNum;
+      address accuser;
+      project rProject;
+      task rTask;
+      address defendant;
+      string description;
+      uint256 basicPenalty;
+      bool decided;
+      bool verdict;
+      Judge reportJudge;
+    }
+    struct judgeReport{
+        uint256 jreportNum;
+        address accuser;
+        basicReport jreport;
         string description;
-        bool decision;
+        bool verdict;
     }
     enum projectStatus{
         INIT,
@@ -119,17 +145,40 @@ contract OPlatform{
     }
 
     /*
+
+        Modifiers
+
+    */
+     modifier onlyWitness {
+      uint wRank = witnessRanks[msg.sender];
+      require(wRank > 0 &&  wRank < 22);
+      _;
+    }
+    /*
         mappings
     */
     mapping (address => client) Clients;
     mapping (address => freelancer) Freelancers;
     mapping (uint256 => project) Projects;
-    mapping (uint256 => report) Reports;
+    mapping (uint256 => basicReport) Reports;
+    mapping (uint256 => judgeReport) judgeReports;
     mapping (uint256 => task) Tasks;
     mapping (uint256 => PTOA) TOAs;
     mapping (uint256 => tag) Tags;
     mapping (uint256 => offer) Offers;
-    mapping (uint256 => counterOffer) CounterOffers;
+    mapping (uint256 => attachedToTask) attachements;
+    mapping (uint256 => attachedtoProject) pattachements;
+    uint8 witnessCount;
+    uint8 maxWitnesses;
+
+    mapping(address => uint256) public delegates;
+    mapping(address => address) public voters;
+    mapping (uint => Witness) public witnesses;
+    mapping(uint256 => mapping(uint256 => bool)) witnessVote;
+    mapping(uint => uint) judgeReportVotes;
+    mapping(address => Judge) Judges;
+    mapping (address => uint) public witnessRanks;
+    mapping (address => uint) public votesForJudge;
 
     /*
         Events
@@ -223,6 +272,36 @@ contract OPlatform{
         atag.tagName =  tagName;
         emit taskTag(taskNo, tagName);
     }
+    function submitTask(uint256 taskNo, string memory link) public{
+        require(Projects[Tasks[taskNo].projectNum].pfreelancer.userAddress == tx.origin);
+        fileCounter = fileCounter.add(1);
+        attachedToTask storage newAttachment = attachements[fileCounter];
+        newAttachment.taskNum = taskNo;
+        newAttachment.afreelancer = Projects[Tasks[taskNo].projectNum].pfreelancer;
+        //event
+    }
+    function approveTask(uint256 taskNo) public{
+        require(Projects[Tasks[taskNo].projectNum].pclient.userAddress == tx.origin);
+        task storage currentTask = Tasks[taskNo];
+        currentTask.approved = true;
+        //event
+    }
+    function uploadAttachment(uint256 taskNo, string memory link) public{
+        require(Projects[Tasks[taskNo].projectNum].pclient.userAddress == tx.origin);
+        fileCounter = fileCounter.add(1);
+        attachedToTask storage newAttachment = attachements[fileCounter];
+        newAttachment.taskNum = taskNo;
+        newAttachment.aclient = Projects[Tasks[taskNo].projectNum].pclient;
+        //event
+    }
+    function addProjectAttachment(uint256 projectNo, string memory link) public{
+        require(Projects[projectNo].pclient.userAddress == tx.origin);
+        fileCounter = fileCounter.add(1);
+        attachedtoProject storage newAttachment = pattachements[fileCounter];
+        newAttachment.projectNum = projectNo;
+        newAttachment.aclient = Projects[projectNo].pclient;
+        //event
+    }
     function newOffer(uint256 projectNo, uint256 budget, uint256 time) public{
         require(Clients[tx.origin].client == 0);
         offerCounter = offerCounter.add(1);
@@ -247,6 +326,195 @@ contract OPlatform{
         OPToken.burn(currentProject.pclient.userAddress, currentProject.downPayment);
         OPToken.mint(currentProject.pfreelancer.userAddress, currentProject.downPayment);
         emit projectStarted(currentProject.projectNum, offerNo, currentProject.pclient.userAddress, currentProject.pfreelancer.userAddress, currentProject.budget, currentProject.time);
+    }
+     function eligibleForWitness(address _delegate) public view returns (bool) {
+       return delegates[_delegate] > delegates[witnesses[witnessCount].addr];
+    }
+    event Stepdown(address indexed _witness, string _name, uint rank);
+    event NewWitness(address indexed _witness, string _name, uint rank);
+    function witnessStepdown() public onlyWitness  returns (bool) {
+     uint rank = witnessRanks[msg.sender];
+     Witness memory thisWitness = witnesses[rank];
+     delete witnesses[rank];
+     witnessRanks[msg.sender] = 0;
+     if(rank == witnessCount) return true; // If this the last rank, skipping the next loop
+     for (uint i = rank+1; i < witnessCount+1; i++){ // Move up each witness of a lower rank
+         witnessRanks[witnesses[i-1].addr] = witnessRanks[witnesses[i].addr];
+         witnesses[i-1] = witnesses[i];
+     }
+
+     witnessRanks[witnesses[witnessCount].addr] = 0; // Last witness seat must become available after witness stepdown
+     delete witnesses[witnessCount];
+     emit Stepdown(msg.sender, thisWitness.name, rank);
+     return true;
+     }
+     function becomeWitness(string memory _name) public returns (bool) {
+      uint256 weight = delegates[msg.sender];
+      require(weight > 0 && ( witnessRanks[msg.sender] > 21 || witnessRanks[msg.sender] ==0));
+      uint rank;
+      if(witnessCount == 0 ){
+        rank = 1;
+      }else{
+        for (uint i = witnessCount; i > 0 ; i--){ // iterate on the witnesses from the lowest to highest rank to save as much gas as possible. Loop is bounded by witnessCount
+            // if(witnesses[i].addr == msg.sender) break; // if message sender is already this witness, throw
+            address witnessAddr = witnesses[i].addr;
+           uint256 witnessWeight = delegates[witnessAddr];
+            if(witnessWeight == 0 && i != 1) continue; //if there is no delegate at this rank and this is not the highest rank then skip this iteration
+            if(witnessWeight > weight) break; // if this witness has a higher weight than message sender, break the loop
+          if(i == maxWitnesses){  // if this is the lowest witness rank, remove this delegate from witnesses
+               witnessRanks[witnessAddr] = 0;
+               delete witnesses[i];
+            }else{
+                witnesses[i+1] = witnesses[i]; // Move this witness down 1 rank
+                witnessRanks[witnesses[i+1].addr] = i;
+            }
+            rank = i;
+        }
+      }
+
+      require(rank > 0); // Require that message sender has a rank after the loop
+      if(rank > 0 && witnessCount < 21){
+        witnessCount +=1;
+      }
+      witnessRanks[msg.sender] = rank;
+      Witness storage newWitness = witnesses[rank];
+      newWitness.name = _name;
+      newWitness.addr = msg.sender;
+      emit NewWitness(msg.sender, _name, rank);
+      return true;
+    }
+        event Delegation(address indexed voter, address indexed delegate, uint256 balance);
+    function increaseVote(address _voter, uint256 _amount) internal{
+      delegates[voters[_voter]] = delegates[voters[_voter]].add(_amount);
+      emit Delegation(_voter, voters[msg.sender], OPToken.balanceOf(msg.sender));
+    }
+    function decreaseVote(address _voter, uint256 _amount) internal{
+      delegates[voters[_voter]] = delegates[voters[_voter]].sub(_amount);
+      emit Delegation(_voter, voters[_voter], OPToken.balanceOf(msg.sender));
+    }
+
+    function signal(address _delegate) public {
+        require(OPToken.balanceOf(msg.sender) > 0);
+        require(_delegate != address(0));
+        require(voters[msg.sender] != _delegate);
+        if(voters[msg.sender] != address(0)){
+            delegates[voters[msg.sender]] = delegates[voters[msg.sender]].sub(OPToken.balanceOf(msg.sender));
+        }
+        delegates[_delegate] = delegates[_delegate].add(OPToken.balanceOf(msg.sender));
+        voters[msg.sender] = _delegate;
+        emit Delegation(msg.sender, _delegate, OPToken.balanceOf(msg.sender));
+    }
+    function delegatePercentage(address _delegate) public view returns (uint256) {
+       if(delegates[_delegate] == OPToken.getTotalSupply()) return 100;
+       return (delegates[_delegate].div(OPToken.getTotalSupply())).mul(100);
+    }
+    function getRanking(address account) public view returns(uint){
+        return witnessRanks[account];
+    }
+    function nominateForJudge(string memory name) public{
+        require(Judges[tx.origin].approved == false);
+        Judge storage newJudge = Judges[tx.origin];
+        newJudge.name = name;
+        newJudge.approved = false;
+
+        //event
+    }
+    function voteForJudge(address address_) public{
+        require(witnessRanks[tx.origin] > 0 && witnessRanks[tx.origin] < 22);
+        votesForJudge[address_] = votesForJudge[address_].add(1);
+        if(votesForJudge[address_] > witnessCount/2){
+            Judge storage currentJudge =Judges[address_];
+            currentJudge.approved = true;
+            //event
+        }
+        //event
+    }
+    function fileBasicReportForProject(uint256 projectNum, string memory description) public{
+        require( (Projects[projectNum].pfreelancer.userAddress == tx.origin ) || ((Projects[projectNum].pclient.userAddress == tx.origin )) );
+        reportCounter =  reportCounter.add(1);
+        basicReport storage bReport = Reports[reportCounter];
+        bReport.accuser = tx.origin;
+        if(Clients[tx.origin].client == 1){
+            bReport.defendant= Projects[projectNum].pfreelancer.userAddress;
+        }else{
+            bReport.defendant= Projects[projectNum].pclient.userAddress;
+        }
+        project storage currentProject = Projects[projectNum];
+        currentProject.pstatus = projectStatus.FROZEN;
+        bReport.description = description;
+        bReport.rProject = currentProject;
+        //event
+    }
+
+    function decideBasicReportForProject(uint256 reportNum, bool decision) public{
+        require((Judges[tx.origin].approved == true) && (Reports[reportNum].decided = false));
+        basicReport storage bReport = Reports[reportNum];
+        bReport.verdict = decision;
+        bReport.decided = true;
+        project storage currentProject = Projects[bReport.rProject.projectNum];
+        if(decision){
+            if(Clients[bReport.defendant].client == 1){
+                currentProject.clientPenalty =  true;
+            }else{
+                currentProject.freelancerPenalty = true;
+            }
+        }
+        //event
+    }
+     function fileBasicReportForTask(uint256 taskNo, string memory description) public{
+       require((Projects[Tasks[taskNo].projectNum].pclient.userAddress == tx.origin) || (Projects[Tasks[taskNo].projectNum].pfreelancer.userAddress == tx.origin) );
+        reportCounter =  reportCounter.add(1);
+        basicReport storage bReport = Reports[reportCounter];
+        bReport.accuser = tx.origin;
+        if(Clients[tx.origin].client == 1){
+            bReport.defendant= Projects[Tasks[taskNo].projectNum].pfreelancer.userAddress;
+        }else{
+            bReport.defendant= Projects[Tasks[taskNo].projectNum].pclient.userAddress;
+        }
+        project storage currentProject = Projects[Tasks[taskNo].projectNum];
+        currentProject.pstatus = projectStatus.FROZEN;
+        bReport.description = description;
+        bReport.rProject = currentProject;
+        //event
+    }
+
+    function decideBasicReportForTask(uint256 reportNum, bool decision) public{
+        require((Judges[tx.origin].approved == true) && (Reports[reportNum].decided = false));
+        basicReport storage bReport = Reports[reportNum];
+        bReport.verdict = decision;
+        bReport.decided = true;
+        project storage currentProject = Projects[Tasks[bReport.rTask.taskNum].projectNum];
+        if(decision){
+            if(Clients[bReport.defendant].client == 1){
+                currentProject.clientPenalty =  true;
+            }else{
+                currentProject.freelancerPenalty = true;
+            }
+        }
+    }
+    function appealReport(uint256 reportNum) public{
+        require( (Projects[Reports[reportNum].rProject.projectNum].pfreelancer.userAddress == tx.origin ) || ((Projects[Reports[reportNum].rProject.projectNum].pclient.userAddress == tx.origin )) || ((Projects[Reports[reportNum].rTask.projectNum].pclient.userAddress == tx.origin )) || ((Projects[Reports[reportNum].rTask.projectNum].pclient.userAddress == tx.origin )) );
+
+
+    }
+    function finishProject(uint256 projectNum) public{
+
+        //Logic: pay freelancer and return collateral
+    }
+    // function decideReport(uint256 _reportNumber){
+    //   //require(witnessRanks[msg.sender] > 0 && witnessRanks[msg.sender] < 22);
+    //   require((block.number > casePeriod) && (block.number < casePeriod + challengingPeriod));
+    //   witnessVote[witnessRanks[msg.sender]][_caseID] = true;
+    //   reportVotes[_caseID] = reportVotes[_caseID].add(1);
+    //   if(reportVotes[_caseID] > (witnessCount/2)){
+    //     cases[_caseID].spam = true;
+    //   }
+    // }
+
+    event Reported(uint256 _caseID, address reporter);
+    function reportCase(uint256 _caseID) public returns(bool reported){
+
+        return true;
     }
 
 
