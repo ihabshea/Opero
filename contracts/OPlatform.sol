@@ -27,7 +27,9 @@ contract OPlatform{
     uint256 reportCounter;
     uint256 fileCounter;
     uint256 TOACounter;
-    uint256 PrizePool;
+    uint256 JudgeReward;
+    uint256 ExpertReward;
+    uint256 voteCounter;
     uint256 roundsPerHalving;
     uint256 gracePeriod;
     uint256 freezePeriod;
@@ -111,6 +113,8 @@ contract OPlatform{
     }
     struct Witness {
        address addr;
+       uint256[] reports;
+       uint256 reportCount;
        string name;
     }
     struct Judge{
@@ -118,7 +122,13 @@ contract OPlatform{
         string name;
         bool approved;
         uint penalties;
+        uint256[] reports;
+        uint256 reportCount;
         uint currentPenalties;
+    }
+    struct Round{
+        uint256 voteCount;
+        uint256 eVoteCount;
     }
     struct basicReport{
       uint256 reportNum;
@@ -128,6 +138,7 @@ contract OPlatform{
       address defendant;
       string description;
       uint256 basicPenalty;
+      uint256 round;
       bool decided;
       bool verdict;
       bool isTask;
@@ -139,6 +150,7 @@ contract OPlatform{
         basicReport jreport;
         string description;
         bool verdict;
+        uint256 round;
     }
     enum projectStatus{
         INIT,
@@ -182,12 +194,14 @@ contract OPlatform{
     mapping(address => Judge) Judges;
     mapping (address => uint) public witnessRanks;
     mapping (address => uint) public votesForJudge;
-    mapping(uint => uint) reportVotes;
+    mapping (address => Witness) public Witnesses;
+    mapping (uint => uint) reportVotes;
+    mapping (uint => Round) Rounds;
     /*
         Events
     */
-    event FreelancerRegisteration(address indexed userAddresss, string name_, string email_, string medium_, string github_, string linkedin_, string website_);
-    event ClientRegisteration(address indexed userAddresss, string name_, string email_, string medium_, string github_, string linkedin_, string website_);
+    event FreelancerRegistration(address indexed userAddresss, string name_, string email_, string medium_, string github_, string linkedin_, string website_);
+    event ClientRegistration(address indexed userAddresss, string name_, string email_, string medium_, string github_, string linkedin_, string website_);
     event projectCreation(uint256 indexed projectNo, address indexed pclient, string title, string description, uint256  budget, uint256  time);
     event OfferCreation(uint256 indexed projectNo, address indexed clientAddress, address indexed freelancerAddress, uint256 budget, uint256 time, bool accepted);
     event projectStarted(uint256 indexed projectNo, uint256 offerNum, address indexed clientAddress, address indexed freelancerAddress, uint256 budget, uint256 time);
@@ -199,10 +213,15 @@ contract OPlatform{
         functions
 
     */
-    constructor(address OPAddress, uint256 gracePeriod_, uint256 collateral) public{
+    constructor(address OPAddress, uint256 judgeReward_, uint256 ExpertReward_, uint256 roundsPerHalving_, uint256 collateral, uint8 maxWitnesses_, uint256 blocksPerRound_) public{
         OPToken = OPTInterface(OPAddress);
-        gracePeriod = gracePeriod_;
+        JudgeReward = judgeReward_;
+        ExpertReward = ExpertReward_;
+        roundsPerHalving = roundsPerHalving_;
+        genesisBlock = block.number;
         projectCollateral = collateral;
+        maxWitnesses = maxWitnesses_;
+        blocksPerRound = blocksPerRound_;
     }
 
     function registerUser(string memory name_, string memory email_, string memory medium_, string memory github_, string memory linkedin_, string memory website_, bool freelancer_) public{
@@ -214,7 +233,7 @@ contract OPlatform{
             newFreelancer.website = website_;
             newFreelancer.github = github_;
             newFreelancer.linkedin = linkedin_;
-            emit FreelancerRegisteration(tx.origin, name_, email_, medium_, github_, linkedin_, website_);
+            emit FreelancerRegistration(tx.origin, name_, email_, medium_, github_, linkedin_, website_);
         }else{
             client storage newClient = Clients[tx.origin];
             newClient.name = name_;
@@ -224,7 +243,7 @@ contract OPlatform{
             newClient.github = github_;
             newClient.client = 1;
             newClient.linkedin = linkedin_;
-            emit ClientRegisteration(tx.origin, name_, email_, medium_, github_, linkedin_, website_);
+            emit ClientRegistration(tx.origin, name_, email_, medium_, github_, linkedin_, website_);
         }
     }
     function newProject(string memory title, string memory description, uint256  budget, uint256  time) public{
@@ -353,7 +372,7 @@ contract OPlatform{
      }
      function becomeWitness(string memory _name) public returns (bool) {
       uint256 weight = delegates[msg.sender];
-      require(weight > 0 && ( witnessRanks[msg.sender] > 21 || witnessRanks[msg.sender] ==0));
+      require(weight > 0 && ( witnessRanks[msg.sender] > maxWitnesses || witnessRanks[msg.sender] ==0));
       uint rank;
       if(witnessCount == 0 ){
         rank = 1;
@@ -436,6 +455,7 @@ contract OPlatform{
         require( (Projects[projectNum].pfreelancer.userAddress == tx.origin ) || ((Projects[projectNum].pclient.userAddress == tx.origin )) );
         reportCounter =  reportCounter.add(1);
         basicReport storage bReport = Reports[reportCounter];
+        bReport.round = (block.number - genesisBlock) / blocksPerRound;
         bReport.accuser = tx.origin;
         if(Clients[tx.origin].client == 1){
             bReport.defendant= Projects[projectNum].pfreelancer.userAddress;
@@ -452,11 +472,16 @@ contract OPlatform{
     function decideBasicReportForProject(uint256 reportNum, bool decision) public{
         require((Judges[tx.origin].approved == true) && (Reports[reportNum].decided = false));
         basicReport storage bReport = Reports[reportNum];
+        voteCounter = voteCounter.add(1);
         bReport.verdict = decision;
         bReport.decided = true;
         bReport.isTask = true;
-        bReport.reportJudge = Judges[tx.origin];
+        Judge storage currentJudge = Judges[tx.origin];
+        bReport.reportJudge = currentJudge;
         project storage currentProject = Projects[bReport.rProject.projectNum];
+        currentJudge.reportCount = currentJudge.reportCount.add(1);
+        currentJudge.reports.push(reportNum);
+        // registeredVote.round =
         if(decision){
             if(Clients[bReport.defendant].client == 1){
                 currentProject.clientPenalty =  true;
@@ -471,11 +496,13 @@ contract OPlatform{
         reportCounter =  reportCounter.add(1);
         basicReport storage bReport = Reports[reportCounter];
         bReport.accuser = tx.origin;
+        bReport.round = (block.number - genesisBlock) / blocksPerRound;
         if(Clients[tx.origin].client == 1){
             bReport.defendant= Projects[Tasks[taskNo].projectNum].pfreelancer.userAddress;
         }else{
             bReport.defendant= Projects[Tasks[taskNo].projectNum].pclient.userAddress;
         }
+
         project storage currentProject = Projects[Tasks[taskNo].projectNum];
         currentProject.pstatus = projectStatus.FROZEN;
         bReport.description = description;
@@ -489,7 +516,11 @@ contract OPlatform{
         bReport.verdict = decision;
         bReport.decided = true;
         bReport.reportJudge = Judges[tx.origin];
-        project storage currentProject = Projects[Tasks[bReport.rTask.taskNum].projectNum];
+        Judge storage currentJudge = Judges[tx.origin];
+        bReport.reportJudge = currentJudge;
+        project storage currentProject = Projects[bReport.rProject.projectNum];
+        currentJudge.reportCount = currentJudge.reportCount.add(1);
+        currentJudge.reports.push(reportNum);
         if(decision){
             if(Clients[bReport.defendant].client == 1){
                 currentProject.clientPenalty =  true;
@@ -502,6 +533,7 @@ contract OPlatform{
         require( (Projects[Reports[reportNum].rProject.projectNum].pfreelancer.userAddress == tx.origin ) || ((Projects[Reports[reportNum].rProject.projectNum].pclient.userAddress == tx.origin )) || ((Projects[Reports[reportNum].rTask.projectNum].pclient.userAddress == tx.origin )) || ((Projects[Reports[reportNum].rTask.projectNum].pclient.userAddress == tx.origin )) );
         reportCounter = reportCounter.add(1);
         judgeReport storage jReport = judgeReports[reportCounter];
+        jReport.round = (block.number - genesisBlock) / blocksPerRound;
         jReport.accuser = tx.origin;
         jReport.jreport = Reports[reportNum];
         jReport.description = description;
@@ -512,7 +544,9 @@ contract OPlatform{
         reportVotes[JReportNum] = reportVotes[JReportNum].add(1);
         basicReport storage br = Reports[JReportNum];
         Judge storage currentJudge = br.reportJudge;
-
+        Witness storage currentWitness = Witnesses[tx.origin];
+        currentWitness.reportCount = currentWitness.reportCount.add(1);
+        currentWitness.reports.push(JReportNum);
         if(reportVotes[JReportNum] > (witnessCount / 2)){
             currentJudge.penalties = currentJudge.penalties.add(1);
             currentJudge.currentPenalties = currentJudge.currentPenalties.add(1);
@@ -551,8 +585,51 @@ contract OPlatform{
         currentProject.pstatus = projectStatus.FINISHED;
         //Logic: pay freelancer and return collateral
     }
+    // function decideReport(uint256 _reportNumber){
+    //   //require(witnessRanks[msg.sender] > 0 && witnessRanks[msg.sender] < 22);
+    //   require((block.number > casePeriod) && (block.number < casePeriod + challengingPeriod));
+    //   witnessVote[witnessRanks[msg.sender]][_caseID] = true;
+    //   reportVotes[_caseID] = reportVotes[_caseID].add(1);
+    //   if(reportVotes[_caseID] > (witnessCount/2)){
+    //     cases[_caseID].spam = true;
+    //   }
+    // }
 
-
+    function claimJudgeReward() public {
+        require(Judges[tx.origin].approved =true);
+        uint256 NReports = Judges[tx.origin].reportCount;
+        uint256 currentRound = uint((block.number.sub(genesisBlock)).div(blocksPerRound)) +1;
+        uint256 Claimed;
+        uint currentReward;
+        uint totalReports;
+        for(uint256 i=0; i < NReports; i++){
+            uint256 ten = 10**4;
+            uint256 halvings = (Reports[Judges[msg.sender].reports[i]].round / roundsPerHalving);
+            currentReward = ((10**4)/2**halvings) * JudgeReward;
+            currentReward /= 10**4;
+            totalReports  += Rounds[Reports[Judges[msg.sender].reports[i]].round].voteCount;
+        }
+        Claimed =  ((NReports / totalReports) * (currentReward));
+        OPToken.mint(tx.origin, Claimed);
+    }
+    function claimWitnessReward() public {
+        require(Judges[tx.origin].approved =true);
+        uint256 NReports = Witnesses[tx.origin].reportCount;
+        uint256 currentRound = uint((block.number.sub(genesisBlock)).div(blocksPerRound)) +1;
+        uint256 Claimed;
+        uint currentReward;
+        uint totalReports;
+        for(uint256 i=0; i < NReports; i++){
+            uint256 ten = 10**4;
+            uint256 halvings = (judgeReports[Witnesses[msg.sender].reports[i]].round / roundsPerHalving);
+            currentReward = ((10**4)/2**halvings) * JudgeReward;
+            currentReward /= 10**4;
+            totalReports  += Rounds[judgeReports[Witnesses[msg.sender].reports[i]].round].voteCount;
+        }
+        Claimed =  ((NReports / totalReports) * (currentReward));
+        OPToken.mint(tx.origin, Claimed);
+    }
+    //function claimWitnessReward() public {}
     event Reported(uint256 _caseID, address reporter);
     function reportCase(uint256 _caseID) public returns(bool reported){
 
@@ -561,6 +638,4 @@ contract OPlatform{
 
 
     // function startProject()
-
-
 }
